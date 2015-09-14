@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xlab/at/sms"
 	"github.com/xiqingping/golibs/serial"
+	"github.com/xlab/at/sms"
 )
 
 type GsmUnsHandler interface {
@@ -43,6 +43,49 @@ func NewGsm(name string, baud int) (*Gsm, error) {
 	return &gsm, nil
 }
 
+type checkReply func(string) bool
+
+func (g *Gsm) waitForCreg() error {
+	return g.waitForCommand("AT+CREG?",
+		`\+CREG: 0,[0-5]`,
+		func(reply string) bool {
+			return "+CREG: 0,1" == reply || "+CREG: 0,5" == reply
+
+		},
+		8,
+		time.Second*5)
+}
+
+func (g *Gsm) waitForCgreg() error {
+	return g.waitForCommand("AT+CGREG?",
+		`\+CGREG: 0,[0-5]`,
+		func(reply string) bool {
+			return "+CGREG: 0,1" == reply || "+CGREG: 0,5" == reply
+
+		},
+		8,
+		time.Second*5)
+}
+
+func (g *Gsm) waitForCommand(cmd, expect string, check checkReply, times int, unitDuration time.Duration) error {
+	for i := 0; i < times; i = i + 1 {
+		thisEndTime := time.Duration(time.Now().UnixNano()) + unitDuration
+		//if reply, err := g.atcmd("AT+CREG?", `\+CREG: 0,[0-5]`, unitDuration); err == nil {
+		if reply, err := g.atcmd(cmd, expect, unitDuration); err == nil {
+			if check(reply) {
+				return nil
+			}
+		}
+
+		leftTime := thisEndTime - time.Duration(time.Now().UnixNano())
+		if leftTime > 0 {
+			time.Sleep(leftTime)
+		}
+	}
+
+	return fmt.Errorf(`Wait for command "%s" timeout`, cmd)
+}
+
 func (g *Gsm) Init() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
@@ -61,6 +104,22 @@ func (g *Gsm) Init() error {
 		return err
 	}
 	if _, err := g.atcmd("AT+CMGF=0", "OK", time.Second); err != nil {
+		return err
+	}
+
+	if reply, err := g.atcmd("AT+CMGD=1,4", "(OK|ERROR)", time.Second*10); err != nil || reply == "ERROR" {
+		fmt.Println("GSMAT: delete sms maybe error.")
+	}
+
+	if _, err := g.atcmd("AT+CREG=0", "OK", time.Second); err != nil {
+		return err
+	}
+
+	if err := g.waitForCreg(); err != nil {
+		return err
+	}
+
+	if err := g.waitForCgreg(); err != nil {
 		return err
 	}
 
@@ -112,7 +171,7 @@ func (g *Gsm) recvThread() error {
 			select {
 			case g.mChanAtReply <- reply:
 			default:
-				fmt.Printf("Drop: " + reply)
+				fmt.Println("Drop: " + reply)
 			}
 		}
 	}
@@ -201,8 +260,9 @@ func (g *Gsm) SendSMS(num, msg string) error {
 	if _, err := g.atcmd("AT", "OK", time.Second); nil != err {
 		return err
 	}
+
 	s := sms.Message{
-		Encoding: sms.Encodings.UCS2,
+		Encoding: sms.Encodings.Gsm7Bit,
 		Text:     msg,
 		Address:  sms.PhoneNumber(num),
 		VP:       sms.ValidityPeriod(time.Hour * 24 * 4),
