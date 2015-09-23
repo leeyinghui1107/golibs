@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	l4g "github.com/alecthomas/log4go"
 	"github.com/xiqingping/golibs/serial"
 	"github.com/xlab/at/sms"
 )
@@ -18,6 +19,7 @@ type GsmUnsHandler interface {
 }
 
 type Gsm struct {
+	mLogger      *l4g.Logger
 	mPort        *serial.SerialPort
 	mMutex       sync.Mutex
 	mExit        bool
@@ -26,13 +28,14 @@ type Gsm struct {
 	mRecvCMT     bool
 }
 
-func NewGsm(name string, baud int) (*Gsm, error) {
+func NewGsm(name string, baud int, logger *l4g.Logger) (*Gsm, error) {
 	s, err := serial.NewSerialPort(name, baud)
 	if nil != err {
 		return nil, err
 	}
 
 	gsm := Gsm{
+		mLogger:      logger,
 		mPort:        s,
 		mExit:        false,
 		mChanAtReply: make(chan string),
@@ -70,11 +73,8 @@ func (g *Gsm) waitForCgreg() error {
 func (g *Gsm) waitForCommand(cmd, expect string, check checkReply, times int, unitDuration time.Duration) error {
 	for i := 0; i < times; i = i + 1 {
 		thisEndTime := time.Duration(time.Now().UnixNano()) + unitDuration
-		//if reply, err := g.atcmd("AT+CREG?", `\+CREG: 0,[0-5]`, unitDuration); err == nil {
-		if reply, err := g.atcmd(cmd, expect, unitDuration); err == nil {
-			if check(reply) {
-				return nil
-			}
+		if reply, err := g.atcmd(cmd, expect, unitDuration); err == nil && check(reply) {
+			return nil
 		}
 
 		leftTime := thisEndTime - time.Duration(time.Now().UnixNano())
@@ -90,25 +90,26 @@ func (g *Gsm) Init() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
 
-	if _, err := g.atcmd("AT", "OK", time.Second); err != nil {
-		return err
-	}
+	// auto baudrate
+	g.atcmd("AT", "OK", time.Second)
+	g.atcmd("AT", "OK", time.Second)
+	g.atcmd("ATE0", "OK", time.Second)
+	g.atcmd("ATE0", "OK", time.Second)
+
 	if _, err := g.atcmd("ATE0", "OK", time.Second); err != nil {
 		return err
 	}
 
-	if _, err := g.atcmd("AT", "OK", time.Second); err != nil {
-		return err
-	}
 	if _, err := g.atcmd("AT+CNMI=2,2,0,0,0", "OK", time.Second*2); err != nil {
 		return err
 	}
+
 	if _, err := g.atcmd("AT+CMGF=0", "OK", time.Second); err != nil {
 		return err
 	}
 
 	if reply, err := g.atcmd("AT+CMGD=1,4", "(OK|ERROR)", time.Second*10); err != nil || reply == "ERROR" {
-		fmt.Println("GSMAT: delete sms maybe error.")
+		g.mLogger.Warn("GSMAT: delete sms maybe error.")
 	}
 
 	if _, err := g.atcmd("AT+CREG=0", "OK", time.Second); err != nil {
@@ -129,21 +130,21 @@ func (g *Gsm) Init() error {
 func (g *Gsm) handleSMS(s string) {
 	b, err := hex.DecodeString(s)
 	if nil != err {
-		fmt.Println("handleSMS error:" + err.Error())
+		g.mLogger.Error(`GSMSMS: Decode sms hex string error "%v"`, err)
 		return
 	}
 
 	var msg sms.Message
 	_, err = msg.ReadFrom(b)
 	if err != nil {
-		fmt.Println("handleSMS error:" + err.Error())
+		g.mLogger.Error(`GSMSMS: Decode sms message error "%v"`, err)
 		return
 	}
 
 	select {
 	case g.mChanSMS <- msg:
 	default:
-		fmt.Println("Drop SMS[" + string(msg.Address) + "]:" + msg.Text)
+		g.mLogger.Debug(`GSMSMS: Drop [%v]"%v"`, string(msg.Address), msg.Text)
 	}
 }
 
@@ -171,7 +172,7 @@ func (g *Gsm) recvThread() error {
 			select {
 			case g.mChanAtReply <- reply:
 			default:
-				fmt.Println("Drop: " + reply)
+				g.mLogger.Debug("GSMAT: Drop <- %v", reply)
 			}
 		}
 	}
@@ -198,7 +199,7 @@ func (g *Gsm) waitForReply(exp string, timeout time.Duration) (string, error) {
 			if len(result) > 0 {
 				return result[0], nil
 			}
-			fmt.Println("Drop <- " + data)
+			g.mLogger.Debug("GSMAT: Drop <- %v", data)
 		case <-t:
 			return "", fmt.Errorf("Timeout expired")
 		}
@@ -207,7 +208,7 @@ func (g *Gsm) waitForReply(exp string, timeout time.Duration) (string, error) {
 
 func (g *Gsm) atcmd(cmd, echo string, timeout time.Duration) (string, error) {
 	if "" != cmd {
-		fmt.Printf("GSMAT-> \"%s\"\n", cmd)
+		g.mLogger.Debug(`GSMAT: -> "%s"`, cmd)
 		buf := make([]byte, len(cmd)+1)
 		copy(buf, cmd)
 		buf[len(cmd)] = '\r'
@@ -223,9 +224,9 @@ func (g *Gsm) atcmd(cmd, echo string, timeout time.Duration) (string, error) {
 
 	r, err := g.waitForReply(echo, timeout)
 	if err != nil {
-		fmt.Printf("GSMAT<- error:%s\n", err.Error())
+		g.mLogger.Debug(`GSMAT:<- error "%v"`, err)
 	} else {
-		fmt.Printf("GSMAT<- \"%s\"\n", r)
+		g.mLogger.Debug(`GSMAT:<- "%v"`, r)
 	}
 
 	return r, err
@@ -280,10 +281,10 @@ func (g *Gsm) SendSMS(num, msg string) error {
 		return err
 	}
 
-	cmd = hex.EncodeToString(octets)
-	buf := make([]byte, len(cmd)+1)
-	copy(buf, cmd)
-	buf[len(cmd)] = 0x1A
+	buf := make([]byte, hex.EncodedLen(len(octets))+1)
+	n = hex.Encode(buf, octets)
+	buf[n] = 0x1A
+
 	if _, err := g.mPort.Write(buf); nil != err {
 		return err
 	}
