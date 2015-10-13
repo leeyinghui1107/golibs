@@ -270,6 +270,11 @@ func (g *Gsm) SendSMS(num, msg string) error {
 		VPFormat: sms.ValidityPeriodFormats.Relative,
 		Type:     sms.MessageTypes.Submit,
 	}
+
+	if len(msg) != len(rune(s)) {
+		s.Encoding = sms.Encodings.UCS2
+	}
+
 	n, octets, err := s.PDU()
 
 	if err != nil {
