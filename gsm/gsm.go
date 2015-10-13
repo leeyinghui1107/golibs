@@ -271,7 +271,7 @@ func (g *Gsm) SendSMS(num, msg string) error {
 		Type:     sms.MessageTypes.Submit,
 	}
 
-	if len(msg) != len(rune(s)) {
+	if len(msg) != len([]rune(msg)) {
 		s.Encoding = sms.Encodings.UCS2
 	}
 
