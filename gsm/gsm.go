@@ -185,6 +185,7 @@ func (g *Gsm) Teardown() error {
 
 	g.mExit = true
 	close(g.mChanAtReply)
+	close(g.mChanSMS)
 	time.Sleep(time.Millisecond * 20)
 	return g.mPort.Close()
 }
