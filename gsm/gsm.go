@@ -1,3 +1,6 @@
+/*
+实现了GSM模块手法短信的功能.
+*/
 package gsm
 
 import (
@@ -14,10 +17,7 @@ import (
 	"github.com/xlab/at/sms"
 )
 
-type GsmUnsHandler interface {
-	OnNewMessage(msg string)
-}
-
+// GSM结构体
 type Gsm struct {
 	mLogger      *l4g.Logger
 	mPort        *serial.SerialPort
@@ -28,6 +28,10 @@ type Gsm struct {
 	mRecvCMT     bool
 }
 
+// 构建一个新的GSM结构体.
+// name 与GSM模块连接的串口设备.
+// baud 串口使用的波特率
+// logger 日志
 func NewGsm(name string, baud int, logger *l4g.Logger) (*Gsm, error) {
 	s, err := serial.NewSerialPort(name, baud)
 	if nil != err {
@@ -46,30 +50,66 @@ func NewGsm(name string, baud int, logger *l4g.Logger) (*Gsm, error) {
 	return &gsm, nil
 }
 
+// 等待AT命令应答.
+// expect 合法字符串应答.
+// timeout 等待应答超时
+// return 等到的应答, 错误
+func (g *Gsm) waitForReply(expect string, timeout time.Duration) (string, error) {
+	regExpPatttern := regexp.MustCompile(expect)
+	t := time.After(timeout)
+	for {
+		select {
+		case data := <-g.mChanAtReply:
+			result := regExpPatttern.FindAllString(data, -1)
+			if len(result) > 0 {
+				return result[0], nil
+			}
+			g.mLogger.Debug("GSMAT: Drop <- %v", data)
+		case <-t:
+			return "", fmt.Errorf("Timeout expired")
+		}
+	}
+}
+
+// 发送AT命令并等待应答.
+// expect 合法字符串应答.
+// timeout 等待应答超时
+// return 等到的应答, 错误
+func (g *Gsm) atcmd(cmd, expect string, timeout time.Duration) (string, error) {
+	if "" != cmd {
+		g.mLogger.Debug(`GSMAT: -> "%s"`, cmd)
+		buf := make([]byte, len(cmd)+1)
+		copy(buf, cmd)
+		buf[len(cmd)] = '\r'
+		if _, err := g.mPort.Write(buf); nil != err {
+			return "", err
+		}
+	}
+
+	if "" == expect {
+		time.Sleep(timeout)
+		return "", nil
+	}
+
+	r, err := g.waitForReply(expect, timeout)
+	if err != nil {
+		g.mLogger.Debug(`GSMAT:<- error "%v"`, err)
+	} else {
+		g.mLogger.Debug(`GSMAT:<- "%v"`, r)
+	}
+
+	return r, err
+}
+
+// 判断应答字符串是否为期望的字符串的函数类型
 type checkReply func(string) bool
 
-func (g *Gsm) waitForCreg() error {
-	return g.waitForCommand("AT+CREG?",
-		`\+CREG: 0,[0-5]`,
-		func(reply string) bool {
-			return "+CREG: 0,1" == reply || "+CREG: 0,5" == reply
-
-		},
-		8,
-		time.Second*5)
-}
-
-func (g *Gsm) waitForCgreg() error {
-	return g.waitForCommand("AT+CGREG?",
-		`\+CGREG: 0,[0-5]`,
-		func(reply string) bool {
-			return "+CGREG: 0,1" == reply || "+CGREG: 0,5" == reply
-
-		},
-		8,
-		time.Second*5)
-}
-
+// 多次重试AT指令, 并等待期望的应答.
+// cmd AT命令.
+// expect 合法应答字符串的正则表达式.
+// check 检查应答是否正常的函数.
+// times AT命令重试的次数.
+// unitDuration 一次AT指令等待的时间.
 func (g *Gsm) waitForCommand(cmd, expect string, check checkReply, times int, unitDuration time.Duration) error {
 	for i := 0; i < times; i = i + 1 {
 		thisEndTime := time.Duration(time.Now().UnixNano()) + unitDuration
@@ -86,6 +126,31 @@ func (g *Gsm) waitForCommand(cmd, expect string, check checkReply, times int, un
 	return fmt.Errorf(`Wait for command "%s" timeout`, cmd)
 }
 
+// 等待GSM网络注册(AT命令中的CREG)
+func (g *Gsm) waitForCreg() error {
+	return g.waitForCommand("AT+CREG?",
+		`\+CREG: 0,[0-5]`,
+		func(reply string) bool {
+			return "+CREG: 0,1" == reply || "+CREG: 0,5" == reply
+
+		},
+		8,
+		time.Second*5)
+}
+
+// 等待GPRS网络注册(AT命令中的CGREG)
+func (g *Gsm) waitForCgreg() error {
+	return g.waitForCommand("AT+CGREG?",
+		`\+CGREG: 0,[0-5]`,
+		func(reply string) bool {
+			return "+CGREG: 0,1" == reply || "+CGREG: 0,5" == reply
+
+		},
+		8,
+		time.Second*5)
+}
+
+// 初始化
 func (g *Gsm) Init() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
@@ -127,6 +192,8 @@ func (g *Gsm) Init() error {
 	return nil
 }
 
+// 处理短信PUD字符串.
+// s 串口接收到的PDU字符串.
 func (g *Gsm) handleSMS(s string) {
 	b, err := hex.DecodeString(s)
 	if nil != err {
@@ -148,6 +215,7 @@ func (g *Gsm) handleSMS(s string) {
 	}
 }
 
+// 串口接收线程
 func (g *Gsm) recvThread() error {
 	g.mPort.StartRecv()
 	lc := g.mPort.GetLineChan()
@@ -179,6 +247,7 @@ func (g *Gsm) recvThread() error {
 	return nil
 }
 
+// 关闭GSM模块
 func (g *Gsm) Teardown() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
@@ -190,49 +259,8 @@ func (g *Gsm) Teardown() error {
 	return g.mPort.Close()
 }
 
-func (g *Gsm) waitForReply(exp string, timeout time.Duration) (string, error) {
-	regExpPatttern := regexp.MustCompile(exp)
-	t := time.After(timeout)
-	for {
-		select {
-		case data := <-g.mChanAtReply:
-			result := regExpPatttern.FindAllString(data, -1)
-			if len(result) > 0 {
-				return result[0], nil
-			}
-			g.mLogger.Debug("GSMAT: Drop <- %v", data)
-		case <-t:
-			return "", fmt.Errorf("Timeout expired")
-		}
-	}
-}
-
-func (g *Gsm) atcmd(cmd, echo string, timeout time.Duration) (string, error) {
-	if "" != cmd {
-		g.mLogger.Debug(`GSMAT: -> "%s"`, cmd)
-		buf := make([]byte, len(cmd)+1)
-		copy(buf, cmd)
-		buf[len(cmd)] = '\r'
-		if _, err := g.mPort.Write(buf); nil != err {
-			return "", err
-		}
-	}
-
-	if "" == echo {
-		time.Sleep(timeout)
-		return "", nil
-	}
-
-	r, err := g.waitForReply(echo, timeout)
-	if err != nil {
-		g.mLogger.Debug(`GSMAT:<- error "%v"`, err)
-	} else {
-		g.mLogger.Debug(`GSMAT:<- "%v"`, r)
-	}
-
-	return r, err
-}
-
+// 检测GSM AT命令的通道是否正常.
+// return 错误; ==nil AT命令通道正常.
 func (g *Gsm) Ping() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
@@ -240,6 +268,8 @@ func (g *Gsm) Ping() error {
 	return err
 }
 
+// 接收短信, 这个函数会阻塞直至接收到短信.
+// return 接收到的短信.
 func (g *Gsm) RecvSMS() *sms.Message {
 	select {
 	case msg := <-g.mChanSMS:
@@ -247,6 +277,9 @@ func (g *Gsm) RecvSMS() *sms.Message {
 	}
 }
 
+// 在指定超时时间内接收短信, 这个函数会阻塞直至接收到短信或超时.
+// timeout 超时时间.
+// return 接收到的短信, 错误.
 func (g *Gsm) RecvSMSWithTimeout(timeout *time.Duration) (*sms.Message, error) {
 	select {
 	case msg := <-g.mChanSMS:
@@ -256,6 +289,10 @@ func (g *Gsm) RecvSMSWithTimeout(timeout *time.Duration) (*sms.Message, error) {
 	}
 }
 
+// 发送短信.
+// num 接收者的号码.
+// msg 需要发送的短信内容.
+// return 错误; ==nil 发送正常.
 func (g *Gsm) SendSMS(num, msg string) error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
