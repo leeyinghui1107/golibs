@@ -22,9 +22,8 @@ type Gsm struct {
 	mLogger      *l4g.Logger
 	mPort        *serial.SerialPort
 	mMutex       sync.Mutex
-	mExit        bool
 	mChanAtReply chan string
-	mChanSMS     chan sms.Message
+	mChanSMS     chan *sms.Message
 	mRecvCMT     bool
 }
 
@@ -41,9 +40,8 @@ func NewGsm(name string, baud int, logger *l4g.Logger) (*Gsm, error) {
 	gsm := Gsm{
 		mLogger:      logger,
 		mPort:        s,
-		mExit:        false,
 		mChanAtReply: make(chan string),
-		mChanSMS:     make(chan sms.Message),
+		mChanSMS:     make(chan *sms.Message),
 	}
 	go gsm.recvThread()
 
@@ -209,7 +207,7 @@ func (g *Gsm) handleSMS(s string) {
 	}
 
 	select {
-	case g.mChanSMS <- msg:
+	case g.mChanSMS <- &msg:
 	default:
 		g.mLogger.Debug(`GSMSMS: Drop [%v]"%v"`, string(msg.Address), msg.Text)
 	}
@@ -218,45 +216,44 @@ func (g *Gsm) handleSMS(s string) {
 // 串口接收线程
 func (g *Gsm) recvThread() error {
 	g.mPort.StartRecv()
-	lc := g.mPort.GetLineChan()
+	for {
+		l, err := g.mPort.ReadLine()
+		if err != nil {
+			g.mLogger.Error("GSMAT: recvThread %v", err)
+			return err
+		}
 
-	for !g.mExit {
+		reply := strings.Trim(l, "\r")
+		if len(reply) < 2 {
+			continue
+		}
+		if g.mRecvCMT {
+			g.mRecvCMT = false
+			g.handleSMS(reply)
+			continue
+		}
+		if strings.HasPrefix(reply, "+CMT:") {
+			g.mRecvCMT = true
+			continue
+		}
+
 		select {
-		case b := <-lc:
-			reply := strings.Trim(string(b), "\r")
-			if len(reply) < 2 {
-				continue
-			}
-			if g.mRecvCMT {
-				g.mRecvCMT = false
-				g.handleSMS(reply)
-				continue
-			}
-			if strings.HasPrefix(reply, "+CMT:") {
-				g.mRecvCMT = true
-				continue
-			}
-
-			select {
-			case g.mChanAtReply <- reply:
-			default:
-				g.mLogger.Debug("GSMAT: Drop <- %v", reply)
-			}
+		case g.mChanAtReply <- reply:
+		default:
+			g.mLogger.Info("GSMAT: Drop <- %v", reply)
 		}
 	}
-	return nil
 }
 
 // 关闭GSM模块
 func (g *Gsm) Teardown() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
-
-	g.mExit = true
+	err := g.mPort.Close()
+	time.Sleep(time.Millisecond * 10)
 	close(g.mChanAtReply)
 	close(g.mChanSMS)
-	time.Sleep(time.Millisecond * 20)
-	return g.mPort.Close()
+	return err
 }
 
 // 检测GSM AT命令的通道是否正常.
@@ -270,11 +267,13 @@ func (g *Gsm) Ping() error {
 
 // 接收短信, 这个函数会阻塞直至接收到短信.
 // return 接收到的短信.
-func (g *Gsm) RecvSMS() *sms.Message {
-	select {
-	case msg := <-g.mChanSMS:
-		return &msg
+func (g *Gsm) RecvSMS() (*sms.Message, error) {
+	msg, ok := <-g.mChanSMS
+	if ok {
+		return msg, nil
 	}
+
+	return nil, fmt.Errorf("GSM tear down")
 }
 
 // 在指定超时时间内接收短信, 这个函数会阻塞直至接收到短信或超时.
@@ -282,8 +281,11 @@ func (g *Gsm) RecvSMS() *sms.Message {
 // return 接收到的短信, 错误.
 func (g *Gsm) RecvSMSWithTimeout(timeout *time.Duration) (*sms.Message, error) {
 	select {
-	case msg := <-g.mChanSMS:
-		return &msg, nil
+	case msg, ok := <-g.mChanSMS:
+		if ok {
+			return msg, nil
+		}
+		return nil, fmt.Errorf("GSM tear down")
 	case <-time.After(*timeout):
 		return nil, errors.New("Timeout")
 	}

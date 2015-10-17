@@ -11,23 +11,21 @@ const EOL_DEFAULT byte = '\n'
 const LN_DEFAULT string = "\r"
 
 type SerialPort struct {
-	mPort    io.ReadWriteCloser
-	mName    string
-	mBaud    int
-	mEol     byte
-	mLn      string
-	mExit    bool
-	mBuffer  []byte
-	mLinChan chan []byte
+	mPort     io.ReadWriteCloser
+	mName     string
+	mBaud     int
+	mEol      byte
+	mLn       string
+	mBuffer   []byte
+	mLineChan chan []byte
 }
 
 func NewSerialPort(name string, baud int) (*SerialPort, error) {
 	s := SerialPort{
-		mPort:    nil,
-		mEol:     EOL_DEFAULT,
-		mLn:      LN_DEFAULT,
-		mExit:    false,
-		mLinChan: nil,
+		mPort:     nil,
+		mEol:      EOL_DEFAULT,
+		mLn:       LN_DEFAULT,
+		mLineChan: nil,
 	}
 
 	if err := s.open(name, baud, time.Second); err != nil {
@@ -38,7 +36,7 @@ func NewSerialPort(name string, baud int) (*SerialPort, error) {
 }
 
 func (s *SerialPort) StartRecv() {
-	s.mLinChan = make(chan []byte)
+	s.mLineChan = make(chan []byte)
 	go s.readThread()
 
 }
@@ -46,13 +44,17 @@ func (s *SerialPort) StartRecv() {
 func (s *SerialPort) readThread() {
 	b := make([]byte, 1)
 	s.mBuffer = []byte{}
-	for !s.mExit {
-		n, _ := s.mPort.Read(b)
+	for {
+		n, err := s.mPort.Read(b)
+		if err != nil {
+			break
+		}
+
 		if n != 1 {
 			continue
 		}
 		if b[0] == s.mEol {
-			s.mLinChan <- s.mBuffer
+			s.mLineChan <- s.mBuffer
 			s.mBuffer = []byte{}
 			continue
 		}
@@ -86,20 +88,25 @@ func (s *SerialPort) open(name string, baud int, timeout ...time.Duration) error
 	return nil
 }
 
-func (sp *SerialPort) GetLineChan() chan []byte {
-	return sp.mLinChan
+func (sp *SerialPort) ReadLine() (string, error) {
+	r, ok := <-sp.mLineChan
+	if ok {
+		return string(r), nil
+	}
+	return "", fmt.Errorf("Serial port closed.")
 }
 
 func (sp *SerialPort) Close() error {
-	if sp.mLinChan != nil {
-		close(sp.mLinChan)
-	}
+	var err error
 
 	if sp.mPort != nil {
-		sp.mExit = true
-		return sp.mPort.Close()
+		err = sp.mPort.Close()
 	}
-	return nil
+
+	if sp.mLineChan != nil {
+		close(sp.mLineChan)
+	}
+	return err
 }
 
 func (sp *SerialPort) Write(data []byte) (int, error) {
