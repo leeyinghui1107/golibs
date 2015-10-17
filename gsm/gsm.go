@@ -126,24 +126,20 @@ func (g *Gsm) waitForCommand(cmd, expect string, check checkReply, times int, un
 
 // 等待GSM网络注册(AT命令中的CREG)
 func (g *Gsm) waitForCreg() error {
-	return g.waitForCommand("AT+CREG?",
+	return g.waitForCommand(
+		"AT+CREG?",
 		`\+CREG: 0,[0-5]`,
-		func(reply string) bool {
-			return "+CREG: 0,1" == reply || "+CREG: 0,5" == reply
-
-		},
+		func(reply string) bool { return "+CREG: 0,1" == reply || "+CREG: 0,5" == reply },
 		8,
 		time.Second*5)
 }
 
 // 等待GPRS网络注册(AT命令中的CGREG)
 func (g *Gsm) waitForCgreg() error {
-	return g.waitForCommand("AT+CGREG?",
+	return g.waitForCommand(
+		"AT+CGREG?",
 		`\+CGREG: 0,[0-5]`,
-		func(reply string) bool {
-			return "+CGREG: 0,1" == reply || "+CGREG: 0,5" == reply
-
-		},
+		func(reply string) bool { return "+CGREG: 0,1" == reply || "+CGREG: 0,5" == reply },
 		8,
 		time.Second*5)
 }
@@ -261,7 +257,7 @@ func (g *Gsm) Teardown() error {
 func (g *Gsm) Ping() error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
-	_, err := g.atcmd("AT", "OK", time.Second)
+	_, err := g.atcmd("AT", "OK", time.Millisecond*250)
 	return err
 }
 
@@ -298,7 +294,7 @@ func (g *Gsm) RecvSMSWithTimeout(timeout *time.Duration) (*sms.Message, error) {
 func (g *Gsm) SendSMS(num, msg string) error {
 	g.mMutex.Lock()
 	defer g.mMutex.Unlock()
-	if _, err := g.atcmd("AT", "OK", time.Second); nil != err {
+	if _, err := g.atcmd("AT", "OK", time.Millisecond*250); nil != err {
 		return err
 	}
 
