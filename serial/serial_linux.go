@@ -96,7 +96,16 @@ type Port struct {
 }
 
 func (p *Port) Read(b []byte) (n int, err error) {
-	return p.f.Read(b)
+	for {
+		n, err = p.f.Read(b)
+		if err == nil {
+			return
+		}
+
+		if err != io.EOF {
+			return
+		}
+	}
 }
 
 func (p *Port) Write(b []byte) (n int, err error) {
