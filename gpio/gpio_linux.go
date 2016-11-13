@@ -26,7 +26,6 @@ type pin struct {
 	modePath      string   // the path to the /direction FD to avoid string joining each time
 	edgePath      string   // the path to the /edge FD to avoid string joining each time
 	valueFile     *os.File // the file handle for the value file
-	callback      IRQEvent // the callback function to call when an interrupt occurs
 	initial       bool     // is this the initial epoll trigger?
 	err           error    //the last error
 }
