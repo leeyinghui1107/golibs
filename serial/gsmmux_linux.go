@@ -50,55 +50,24 @@ import (
 	"time"
 )
 
-type GsmMuxPort struct {
-	Port
-	num       int
-	initiator int
-}
+type GsmMuxPort Port
 
-func OpenGsmMuxPort(name string, baud int) (p *GsmMuxPort, err error) {
+func NewGsmMuxPort(name string, baud int) (*GsmMuxPort, error) {
 	port, err := openPort(name, baud, time.Second)
-	if err != nil {
-		return nil, err
-	}
+	return (*GsmMuxPort)(port), err
 
-	return &GsmMuxPort{
-		Port: *port,
-	}, nil
 }
-
-/*
-func (mux *GsmMuxPort) createDeviceNode() {
-	for i := mux.initiator; i < mux.initiator+mux.num; i++ {
-		cmds := fmt.Sprintf("mknod /dev/ttyGSM%d c 251 %d", i, i)
-		fmt.Println("cmd:", cmds)
-		cmd := exec.Command(cmds)
-		cmd.Run()
-	}
-}
-
-func (mux *GsmMuxPort) removeDeivceNode() {
-	for i := mux.initiator; i < mux.initiator+mux.num; i++ {
-		cmd := exec.Command(fmt.Sprintf("rm /dev/ttyGSM%d", i))
-		cmd.Run()
-	}
-}
-*/
 
 func (mux *GsmMuxPort) Start(num, initiator int) error {
-	fd := mux.Port.f.Fd()
+	fd := (*Port)(mux).f.Fd()
 	rc := C.start_mux(C.int(fd), C.int(initiator))
 	if rc != 0 {
 		return fmt.Errorf("start mux return %d", rc)
 	}
 
-	mux.num = num
-	mux.initiator = initiator
-	//mux.createDeviceNode()
 	return nil
 }
 
 func (mux *GsmMuxPort) Close() {
-	//mux.removeDeivceNode()
-	mux.Port.Close()
+	(*Port)(mux).Close()
 }
