@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <script src="jquery.min.js"></script>
+  <script src="thrustrpc.js"></script>
+</head>
+
+<body>
+<form id="ttsform" onsubmit="return callAdd()">
+  <input type="text" name="add0" value="1"/>
+  <input type="text" name="add1" value="2"/>
+  <button type="submit" class="btn btn-default">提交</button>\
+</form>\
+
+<div id="sum"></div>
+
+<script type="text/javascript">
+  $(window).load(function() {
+    thrustRpcInit();
+  });
+
+  function callAdd() {
+    var dataArray = $("#ttsform").serializeArray();
+    var dataObj = {};
+    $(dataArray).each(function(i, field){
+      dataObj[field.name] = field.value;
+    });
+
+    var arg = [];
+    arg[0] = parseInt(dataObj['add0']);
+    arg[1] = parseInt(dataObj['add1']);
+    thrustRpcCall("add", arg, 1000, function(reply, err){
+      if (err != undefined) {
+        document.getElementById('sum').innerHTML = err;
+      } else {
+        document.getElementById('sum').innerHTML = reply;
+      }
+    })
+  }
+</script>
+
+</body>
+</html>
