@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/alexcesaro/log"
 	"github.com/alexcesaro/log/golog"
@@ -72,5 +73,15 @@ func main() {
 		fmt.Println(err)
 		thrust.Exit()
 	}
+
+	go func() {
+		counter := uint32(0)
+		for {
+			time.Sleep(time.Second)
+			rpc.Call("setCounter", counter, time.Millisecond*200)
+			counter++
+		}
+	}()
+
 	http.Serve(ln, nil)
 }

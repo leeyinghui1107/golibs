@@ -15,7 +15,7 @@ function thisMsgHandler(event) {
             clearTimeout(call['timer']);
             if (call['cbk'] != undefined) {
                 var reply = undefined;
-                if (err != undefined) {
+                if (err == undefined) {
                     reply = JSON.parse(msg['data']);
                 }
                 call['cbk'](reply, err);
@@ -26,11 +26,16 @@ function thisMsgHandler(event) {
 
     if (dir == "call") {
         var ret = {dir: "reply", seq: seq};
-        var fn = thrustPendingCalls[msg['method']]
+        var fn = thrustHandlers[msg['method']]
         if (fn == undefined){
             ret['err'] = "Unknown method"
         } else {
-            ret['data'] = JSON.stringify(fn(msg['data']))
+            var dat = msg['data'];
+            var reply = fn(dat);
+
+            console.log("dat=" + dat)
+            console.log("reply=" + reply)
+            ret['data'] = JSON.stringify(reply)
         }
         THRUST.remote.send(JSON.stringify(ret));
     }

@@ -31,6 +31,10 @@ func (c *call) done(v interface{}) {
 }
 
 func (c *call) handleReply(dat []byte) {
+	if dat == nil {
+		c.dc <- nil
+	}
+
 	var replyv reflect.Value
 	replyIsValue := false
 	if c.replyType.Kind() == reflect.Ptr {
@@ -102,19 +106,15 @@ func NewRpc(win *thrwin.Window, logger log.Logger) (*Rpc, error) {
 	return rpc, err
 }
 
-// Is this an exported - upper case - name?
 func isExported(name string) bool {
 	rune, _ := utf8.DecodeRuneInString(name)
 	return unicode.IsUpper(rune)
 }
 
-// Is this type exported or a builtin?
 func isExportedOrBuiltinType(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
-	// PkgPath will be non-empty even for an exported type,
-	// so we need to check the type name as well.
 	return isExported(t.Name()) || t.PkgPath() == ""
 }
 
@@ -133,7 +133,6 @@ func (rpc *Rpc) Register(mname string, handlerFunc interface{}) {
 		return
 	}
 
-	// First arg need not be a pointer.
 	argType := mtype.In(0)
 	if !isExportedOrBuiltinType(argType) {
 		rpc.logger.Error(mname, "argument type not exported:", argType)
@@ -156,6 +155,11 @@ func (rpc *Rpc) Register(mname string, handlerFunc interface{}) {
 }
 
 func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (interface{}, error) {
+	data, err := json.Marshal(arg)
+	if err != nil {
+		return nil, err
+	}
+
 	var c call
 	rpc.mutex.Lock()
 	c.seq = rpc.seq
@@ -163,23 +167,30 @@ func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (int
 	rpc.pending[c.seq] = &c
 	rpc.mutex.Unlock()
 
-	msg := map[string]interface{}{
+	msgObj := map[string]interface{}{
 		"dir":    "call",
 		"seq":    c.seq,
-		"dat":    arg,
+		"data":   string(data),
 		"method": method,
 	}
 
-	dat, err := json.Marshal(msg)
+	msg, err := json.Marshal(msgObj)
 	if err != nil {
+		rpc.mutex.Lock()
+		delete(rpc.pending, c.seq)
+		rpc.mutex.Unlock()
 		return nil, err
 	}
 
-	rpc.logger.Debug("GO->JS:", string(dat))
-	rpc.win.SendRemoteMessage(string(dat))
+	rpc.logger.Debug("GO->JS:", string(msg))
+	rpc.win.SendRemoteMessage(string(msg))
 
 	select {
 	case reply := <-c.dc:
+		if reply == nil {
+			return nil, nil
+		}
+
 		if err, ok := reply.(error); ok {
 			return nil, err
 		}
@@ -190,7 +201,6 @@ func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (int
 		rpc.mutex.Unlock()
 		return nil, TimeoutErr
 	}
-
 }
 
 func (rpc *Rpc) handleCall(seq uint32, method string, arg []byte) {
@@ -322,14 +332,16 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 
 		_data, ok := f["data"]
 		if !ok {
-			what = `no "data" section`
+			go call.handleReply(nil)
+			drop = false
 			return
 		}
 		data, ok := _data.(string)
 		if !ok {
+			what = `"data" section is not a string`
 			return
 		}
-		what = `"data" section is not a string`
 		go call.handleReply([]byte(data))
+		drop = false
 	}
 }
