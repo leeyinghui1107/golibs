@@ -3,11 +3,13 @@ package main
 //go:generate go-bindata-assetfs asset/...
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
+	"os"
+
+	"github.com/alexcesaro/log"
+	"github.com/alexcesaro/log/golog"
 
 	//"github.com/elazarl/go-bindata-assetfs"
 	"github.com/xiqingping/golibs/thrustrpc"
@@ -18,6 +20,7 @@ import (
 )
 
 func main() {
+	logger := golog.New(os.Stderr, log.Debug)
 	//	http.Handle("/", http.FileServer(&assetfs.AssetFS{
 	//		Asset:     Asset,
 	//		AssetDir:  AssetDir,
@@ -28,7 +31,8 @@ func main() {
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Fatal("Listen:", err)
+		logger.Error("Listen:", err)
+		return
 	}
 
 	fmt.Println(ln.Addr().String())
@@ -46,19 +50,16 @@ func main() {
 	win.SetTitle("GVRTool")
 	win.Focus()
 
-	rpc, err := thrustrpc.NewRpc(win)
+	rpc, err := thrustrpc.NewRpc(win, logger)
 	if err != nil {
 		panic(err)
 	}
 
-	rpc.Register("add", func(arg interface{}) (interface{}, error) {
-		adds, ok := arg.([]int)
-		if !ok {
-			return nil, errors.New("arguments format error")
-		}
+	rpc.Register("add", func(arg []int) (int, error) {
+		fmt.Println("add for", arg)
 		sum := 0
-		for add := range adds {
-			sum += add
+		for _, v := range arg {
+			sum += v
 		}
 		return sum, nil
 	})

@@ -30,13 +30,14 @@
     var arg = [];
     arg[0] = parseInt(dataObj['add0']);
     arg[1] = parseInt(dataObj['add1']);
-    thrustRpcCall("add", arg, 1000, function(reply, err){
+    thrustRpcCall("add", arg, function(reply, err){
       if (err != undefined) {
         document.getElementById('sum').innerHTML = err;
       } else {
         document.getElementById('sum').innerHTML = reply;
       }
-    })
+    }, 1000)
+    return false;
   }
 </script>
 

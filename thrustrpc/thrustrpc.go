@@ -3,10 +3,14 @@ package thrustrpc
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/alexcesaro/log"
 
 	thrwin "github.com/miketheprogrammer/go-thrust/lib/bindings/window"
 	thrcmd "github.com/miketheprogrammer/go-thrust/lib/commands"
@@ -17,35 +21,138 @@ var (
 )
 
 type call struct {
-	seq uint32
-	dc  chan interface{} // Strobes when call is complete.
+	seq       uint32
+	dc        chan interface{} // Strobes when call is complete.
+	replyType reflect.Type
 }
 
-func (c *call) done(reply interface{}) {
-	c.dc <- reply
+func (c *call) done(v interface{}) {
+	c.dc <- v
+}
+
+func (c *call) handleReply(dat []byte) {
+	var replyv reflect.Value
+	replyIsValue := false
+	if c.replyType.Kind() == reflect.Ptr {
+		replyv = reflect.New(c.replyType.Elem())
+	} else {
+		replyv = reflect.New(c.replyType)
+		replyIsValue = true
+	}
+
+	if err := json.Unmarshal([]byte(dat), replyv.Interface()); err != nil {
+		c.dc <- err
+		return
+	}
+
+	if replyIsValue {
+		replyv = replyv.Elem()
+	}
+	c.dc <- replyv
+}
+
+type handler struct {
+	fn      reflect.Value
+	argType reflect.Type
+}
+
+func (h *handler) handleCall(dat []byte) ([]byte, error) {
+	var argv reflect.Value
+	argIsValue := false
+	if h.argType.Kind() == reflect.Ptr {
+		argv = reflect.New(h.argType.Elem())
+	} else {
+		argv = reflect.New(h.argType)
+		argIsValue = true
+	}
+	if err := json.Unmarshal([]byte(dat), argv.Interface()); err != nil {
+		return nil, err
+	}
+	if argIsValue {
+		argv = argv.Elem()
+	}
+
+	returnValues := h.fn.Call([]reflect.Value{argv})
+
+	if err := returnValues[1].Interface(); err != nil {
+		return nil, err.(error)
+	}
+	reply := returnValues[0].Interface()
+	return json.Marshal(reply)
 }
 
 type Rpc struct {
 	seq      uint32
 	mutex    sync.Mutex // protects pending, seq, request
 	pending  map[uint32]*call
-	handlers map[string]func(arg interface{}) (interface{}, error)
+	handlers map[string]*handler
 	win      *thrwin.Window
+	logger   log.Logger
 }
 
-func NewRpc(win *thrwin.Window) (*Rpc, error) {
+func NewRpc(win *thrwin.Window, logger log.Logger) (*Rpc, error) {
 	rpc := &Rpc{
 		win:      win,
 		pending:  make(map[uint32]*call),
-		handlers: make(map[string]func(arg interface{}) (interface{}, error)),
+		handlers: make(map[string]*handler),
+		logger:   logger,
 	}
 
 	_, err := win.HandleRemote(rpc.Handle)
 	return rpc, err
 }
 
-func (rpc *Rpc) Register(method string, fn func(arg interface{}) (interface{}, error)) {
-	rpc.handlers[method] = fn
+// Is this an exported - upper case - name?
+func isExported(name string) bool {
+	rune, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(rune)
+}
+
+// Is this type exported or a builtin?
+func isExportedOrBuiltinType(t reflect.Type) bool {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	// PkgPath will be non-empty even for an exported type,
+	// so we need to check the type name as well.
+	return isExported(t.Name()) || t.PkgPath() == ""
+}
+
+var typeOfError = reflect.TypeOf((*error)(nil)).Elem()
+
+func (rpc *Rpc) Register(mname string, handlerFunc interface{}) {
+	if _, ok := rpc.handlers[mname]; ok {
+		panic("rpc2: multiple registrations for " + mname)
+	}
+
+	method := reflect.ValueOf(handlerFunc)
+	mtype := method.Type()
+
+	if mtype.NumIn() != 1 {
+		rpc.logger.Error("method ", mname, " has wrong number of ins:", mtype.NumIn())
+		return
+	}
+
+	// First arg need not be a pointer.
+	argType := mtype.In(0)
+	if !isExportedOrBuiltinType(argType) {
+		rpc.logger.Error(mname, "argument type not exported:", argType)
+		return
+	}
+	// Method needs one out.
+	if mtype.NumOut() != 2 {
+		rpc.logger.Error("method", mname, "has wrong number of outs:", mtype.NumOut())
+		return
+	}
+
+	// The return type of the method must be error.
+	if returnType := mtype.Out(1); returnType != typeOfError {
+		rpc.logger.Error("method", mname, "returns", returnType.String(), "not error")
+	}
+	rpc.handlers[mname] = &handler{
+		fn:      method,
+		argType: argType,
+	}
 }
 
 func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (interface{}, error) {
@@ -68,6 +175,7 @@ func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (int
 		return nil, err
 	}
 
+	rpc.logger.Debug("GO->JS:", string(dat))
 	rpc.win.SendRemoteMessage(string(dat))
 
 	select {
@@ -85,7 +193,7 @@ func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (int
 
 }
 
-func (rpc *Rpc) handleCall(seq uint32, method string, arg interface{}) {
+func (rpc *Rpc) handleCall(seq uint32, method string, arg []byte) {
 
 	ret := map[string]interface{}{}
 	ret["dir"] = "reply"
@@ -94,25 +202,24 @@ func (rpc *Rpc) handleCall(seq uint32, method string, arg interface{}) {
 	defer func() {
 		msg, err := json.Marshal(ret)
 		if err != nil {
-			fmt.Println("Can not marshal json")
+			rpc.logger.Error("Can not marshal json")
 			return
 		}
+		rpc.logger.Debug("GO->JS:", string(msg))
 		rpc.win.SendRemoteMessage(string(msg))
 	}()
 
-	handle, ok := rpc.handlers[method]
+	h, ok := rpc.handlers[method]
 	if !ok {
 		ret["err"] = "Unsupported method"
 		return
 	}
 
-	reply, err := handle(arg)
-	if err != nil {
+	if reply, err := h.handleCall(arg); err != nil {
 		ret["err"] = err.Error()
-		return
+	} else {
+		ret["data"] = string(reply)
 	}
-
-	ret["data"] = reply
 
 }
 
@@ -121,61 +228,72 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 		return
 	}
 
-	fmt.Println("JS->GO:", er.Message.Payload)
+	rpc.logger.Debug("JS->GO:", er.Message.Payload)
 	drop := true
 	var f map[string]interface{}
+	var what string
 
 	defer func() {
 		if drop {
-			fmt.Println("Drop, unformated message.")
+			rpc.logger.Warning("Drop:", what)
 		}
 	}()
 
 	if err := json.Unmarshal([]byte(er.Message.Payload), &f); err != nil {
+		what = `Unmarshal json string error` + err.Error()
 		return
 	}
 
 	_dir, ok := f["dir"]
 	if !ok {
-		fmt.Println("dir format 1")
+		what = `no "dir" section`
 		return
 	}
 	dir, ok := _dir.(string)
 	if !ok {
-		fmt.Println("dir format 2")
+		what = `"dir" section is not a string`
 		return
 	}
 
 	_seq, ok := f["seq"]
 	if !ok {
-		fmt.Println("seq format 1")
-		return
-	}
-	fmt.Println(reflect.TypeOf(_seq).String())
-	seq, ok := _seq.(uint32)
-	if !ok {
-		fmt.Println("seq format 2")
+		what = `no "seq" section`
 		return
 	}
 
+	fseq, ok := _seq.(float64)
+	if !ok {
+		what = `"seq" section is not a number`
+		return
+	}
+
+	seq := uint32(fseq)
+
 	if dir == "call" {
-		args, ok := f["data"]
+		_data, ok := f["data"]
 		if !ok {
-			fmt.Println("dat format 1")
+			what = `no "data" section`
 			return
 		}
+
+		data, ok := _data.(string)
+		if !ok {
+			what = `"data" section is not a string`
+			return
+		}
+
 		_method, ok := f["method"]
 		if !ok {
-			fmt.Println("method format 1")
+			what = `no "method" section`
 			return
 		}
 
 		method, ok := _method.(string)
 		if !ok {
-			fmt.Println("method format 2")
+			what = `"method" section is not a string`
 			return
 		}
-		go rpc.handleCall(seq, method, args)
+		go rpc.handleCall(seq, method, []byte(data))
 		drop = false
 		return
 	}
@@ -186,13 +304,14 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 		delete(rpc.pending, seq)
 		rpc.mutex.Unlock()
 		if !ok {
-			fmt.Println("No this seq", seq)
+			what = `no pending call for seq ` + strconv.FormatUint(uint64(seq), 10)
 			return
 		}
 		_errstr, ok := f["err"]
 		if ok {
 			errstr, ok := _errstr.(string)
 			if !ok {
+				what = `"err" section is not a string`
 				return
 			}
 
@@ -201,22 +320,16 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 			return
 		}
 
-		__reply, ok := f["data"]
+		_data, ok := f["data"]
+		if !ok {
+			what = `no "data" section`
+			return
+		}
+		data, ok := _data.(string)
 		if !ok {
 			return
 		}
-		_reply, ok := __reply.(string)
-		if !ok {
-			return
-		}
-
-		var reply interface{}
-
-		err := json.Unmarshal([]byte(_reply), &reply)
-		if err != nil {
-			return
-		}
-
-		call.done(reply)
+		what = `"data" section is not a string`
+		go call.handleReply([]byte(data))
 	}
 }

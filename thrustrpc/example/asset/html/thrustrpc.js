@@ -9,12 +9,20 @@ function thisMsgHandler(event) {
   var seq = msg['seq'];
   if (dir == 'reply') {
     var err = msg['err']
-    var reply = msg['data'];
-    var cb = thrustPendingCalls[seq];
-    if (cb != undefined) {
-        cb(reply, err);
+    var _reply = msg['data'];
+    var call = thrustPendingCalls[seq];
+    if (call == undefined) {
+      return;
     }
-  } else if (dir == "call") {
+    clearTimeout(call['timer']);
+    if (call['cbk'] != undefined) {
+	  var reply = JSON.parse(_reply);
+      call['cbk'](reply, err);
+    }
+    return
+  }
+
+  if (dir == "call") {
     var ret = {
         dir: "reply",
         seq: seq,
@@ -25,7 +33,7 @@ function thisMsgHandler(event) {
     if (fn == undefined){
         ret['err'] = "Unknown method"
     } else {
-        ret['data'] = fn(msg['data'])
+        ret['data'] = JSON.stringify(fn(msg['data']))
     }
     THRUST.remote.send(JSON.stringify(ret));
   }
@@ -35,22 +43,30 @@ function thrustRpcRegister(method, fn) {
     thrustHandlers[method] = fn;
 }
 
-function thrustRpcCall(method, arg, timeout, cbk) {
-    thrustPendingCalls[thrustCallSeq] = cbk;
+function thrustRpcTimeout(seq) {
+  var call = thrustPendingCalls(seq);
+  if (call != undefined) {
+    thrustPendingCalls.delete(seq);
+    if (call['cbk'] != undefined) {
+        call['cbk'].cbk(undefined, "timeout");
+    }
+  }
+}
+
+function thrustRpcCall(method, arg, cbk, timeout) {
+    var call = {
+        cbk:cbk,
+    }
     var msg = {
         dir: "call",
         seq: thrustCallSeq,
-        data: arg,
+        data: JSON.stringify(arg),
         method: method,
     };
-    THRUST.remote.send(JSON.stringify(msg))
-    setTimeout(function(seq){
-        var cbk = thrustPendingCalls(seq);
-        if (cbk != undefined) {
-            thrustPendingCalls.delete(seq);
-            cbk(undefined, "timeout");
-        }
-    }(thrustCallSeq))
+    THRUST.remote.send(JSON.stringify(msg));
+    var timer = setTimeout(thrustRpcTimeout, timeout, thrustCallSeq);
+    call['timer'] = timer;
+    thrustPendingCalls[thrustCallSeq] = call;
     thrustCallSeq++;
 }
 
