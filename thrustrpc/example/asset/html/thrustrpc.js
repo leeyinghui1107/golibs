@@ -30,11 +30,7 @@ function thisMsgHandler(event) {
         if (fn == undefined){
             ret['err'] = "Unknown method"
         } else {
-            var dat = msg['data'];
-            var reply = fn(dat);
-
-            console.log("dat=" + dat)
-            console.log("reply=" + reply)
+            var reply = fn(JSON.parse(msg['data']));
             ret['data'] = JSON.stringify(reply)
         }
         THRUST.remote.send(JSON.stringify(ret));
@@ -46,9 +42,9 @@ function thrustRpcRegister(method, fn) {
 }
 
 function thrustRpcTimeout(seq) {
-    var call = thrustPendingCalls(seq);
+    var call = thrustPendingCalls[seq];
     if (call != undefined) {
-        thrustPendingCalls.delete(seq);
+        delete thrustPendingCalls[seq];
         if (call['cbk'] != undefined) {
             call['cbk'].cbk(undefined, "timeout");
         }
