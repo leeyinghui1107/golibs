@@ -56,33 +56,57 @@ func (c *call) handleReply(dat []byte) {
 }
 
 type handler struct {
-	fn      reflect.Value
-	argType reflect.Type
+	fn        reflect.Value
+	hasArg    bool
+	hasReturn bool
+	argType   reflect.Type
 }
 
 func (h *handler) handleCall(dat []byte) ([]byte, error) {
-	var argv reflect.Value
-	argIsValue := false
-	if h.argType.Kind() == reflect.Ptr {
-		argv = reflect.New(h.argType.Elem())
+	var args []reflect.Value
+	if dat != nil {
+		if !h.hasArg {
+			return nil, errors.New("argument error, the method recept no args")
+		}
+
+		var argv reflect.Value = reflect.ValueOf(interface{}(nil))
+		argIsValue := false
+		if h.argType.Kind() == reflect.Ptr {
+			argv = reflect.New(h.argType.Elem())
+		} else {
+			argv = reflect.New(h.argType)
+			argIsValue = true
+		}
+		if err := json.Unmarshal([]byte(dat), argv.Interface()); err != nil {
+			return nil, err
+		}
+		if argIsValue {
+			argv = argv.Elem()
+		}
+		args = []reflect.Value{argv}
 	} else {
-		argv = reflect.New(h.argType)
-		argIsValue = true
-	}
-	if err := json.Unmarshal([]byte(dat), argv.Interface()); err != nil {
-		return nil, err
-	}
-	if argIsValue {
-		argv = argv.Elem()
+		if h.hasArg {
+			return nil, errors.New("argument error, the method recept one arg")
+		}
+		args = []reflect.Value{}
 	}
 
-	returnValues := h.fn.Call([]reflect.Value{argv})
-
-	if err := returnValues[1].Interface(); err != nil {
+	returnValues := h.fn.Call(args)
+	var err interface{}
+	if h.hasReturn {
+		err = returnValues[1].Interface()
+	} else {
+		err = returnValues[0].Interface()
+	}
+	if err != nil {
 		return nil, err.(error)
 	}
-	reply := returnValues[0].Interface()
-	return json.Marshal(reply)
+
+	if h.hasReturn {
+		reply := returnValues[0].Interface()
+		return json.Marshal(reply)
+	}
+	return nil, nil
 }
 
 type Rpc struct {
@@ -125,33 +149,40 @@ func (rpc *Rpc) Register(mname string, handlerFunc interface{}) {
 		panic("rpc2: multiple registrations for " + mname)
 	}
 
+	argType := reflect.TypeOf(interface{}(nil))
 	method := reflect.ValueOf(handlerFunc)
 	mtype := method.Type()
 
-	if mtype.NumIn() != 1 {
+	h := &handler{fn: method}
+
+	if mtype.NumIn() == 1 {
+		argType = mtype.In(0)
+		if !isExportedOrBuiltinType(argType) {
+			rpc.logger.Error(mname, "argument type not exported:", argType)
+			return
+		}
+		h.hasArg = true
+		h.argType = argType
+	} else if mtype.NumIn() != 0 {
 		rpc.logger.Error("method ", mname, " has wrong number of ins:", mtype.NumIn())
 		return
 	}
 
-	argType := mtype.In(0)
-	if !isExportedOrBuiltinType(argType) {
-		rpc.logger.Error(mname, "argument type not exported:", argType)
-		return
-	}
 	// Method needs one out.
-	if mtype.NumOut() != 2 {
+	if mtype.NumOut() == 1 || mtype.NumOut() == 2 {
+		// The last return type of the method must be error.
+		if returnType := mtype.Out(mtype.NumOut() - 1); returnType != typeOfError {
+			rpc.logger.Error("method", mname, "returns", returnType.String(), "not error")
+		}
+	} else {
 		rpc.logger.Error("method", mname, "has wrong number of outs:", mtype.NumOut())
 		return
 	}
 
-	// The return type of the method must be error.
-	if returnType := mtype.Out(1); returnType != typeOfError {
-		rpc.logger.Error("method", mname, "returns", returnType.String(), "not error")
+	if mtype.NumOut() == 2 {
+		h.hasReturn = true
 	}
-	rpc.handlers[mname] = &handler{
-		fn:      method,
-		argType: argType,
-	}
+	rpc.handlers[mname] = h
 }
 
 func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (interface{}, error) {
@@ -204,7 +235,6 @@ func (rpc *Rpc) Call(method string, arg interface{}, timeout time.Duration) (int
 }
 
 func (rpc *Rpc) handleCall(seq uint32, method string, arg []byte) {
-
 	ret := map[string]interface{}{}
 	ret["dir"] = "reply"
 	ret["seq"] = seq
@@ -227,10 +257,9 @@ func (rpc *Rpc) handleCall(seq uint32, method string, arg []byte) {
 
 	if reply, err := h.handleCall(arg); err != nil {
 		ret["err"] = err.Error()
-	} else {
+	} else if reply != nil {
 		ret["data"] = string(reply)
 	}
-
 }
 
 func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
@@ -280,17 +309,6 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 	seq := uint32(fseq)
 
 	if dir == "call" {
-		_data, ok := f["data"]
-		if !ok {
-			what = `no "data" section`
-			return
-		}
-
-		data, ok := _data.(string)
-		if !ok {
-			what = `"data" section is not a string`
-			return
-		}
 
 		_method, ok := f["method"]
 		if !ok {
@@ -303,6 +321,19 @@ func (rpc *Rpc) Handle(er thrcmd.EventResult, this *thrwin.Window) {
 			what = `"method" section is not a string`
 			return
 		}
+		_data, ok := f["data"]
+		if !ok {
+			go rpc.handleCall(seq, method, nil)
+			drop = false
+			return
+		}
+
+		data, ok := _data.(string)
+		if !ok {
+			what = `"data" section is not a string`
+			return
+		}
+
 		go rpc.handleCall(seq, method, []byte(data))
 		drop = false
 		return
