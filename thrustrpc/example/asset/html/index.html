@@ -21,14 +21,14 @@
 function callAdd() {
   var dataArray = $("#ttsform").serializeArray();
   var dataObj = {};
-    
+
   $(dataArray).each(function(i, field){
     dataObj[field.name] = field.value;
   });
   var arg = [];
   arg[0] = parseInt(dataObj['add0']);
   arg[1] = parseInt(dataObj['add1']);
-  thrustRpcCall("add", arg, function(reply, err){
+  THRUST.rpc.call("add", arg, function(reply, err){
     if (err != undefined) {
       document.getElementById('sum').innerHTML = "rpc error: " + err;
     } else {
@@ -43,8 +43,8 @@ function setCounter(obj) {
 }
 
 $(window).load(function() {
-  thrustRpcInit();
-  thrustRpcRegister('setCounter', setCounter);
+  THRUST.rpc.init();
+  THRUST.rpc.registerMethod('setCounter', setCounter);
 });
 
 </script>

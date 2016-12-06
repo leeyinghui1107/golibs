@@ -12,11 +12,10 @@ import (
 	"github.com/alexcesaro/log"
 	"github.com/alexcesaro/log/golog"
 
-	//"github.com/elazarl/go-bindata-assetfs"
 	"github.com/xiqingping/golibs/thrustrpc"
 
-	thrwin "github.com/miketheprogrammer/go-thrust/lib/bindings/window"
-	thrcmd "github.com/miketheprogrammer/go-thrust/lib/commands"
+	thrustwin "github.com/miketheprogrammer/go-thrust/lib/bindings/window"
+	thrustcmd "github.com/miketheprogrammer/go-thrust/lib/commands"
 	"github.com/miketheprogrammer/go-thrust/thrust"
 )
 
@@ -65,7 +64,7 @@ func main() {
 		return sum, nil
 	})
 
-	_, err = win.HandleEvent("closed", func(er thrcmd.EventResult, this *thrwin.Window) {
+	_, err = win.HandleEvent("closed", func(er thrustcmd.EventResult, this *thrustwin.Window) {
 		thrust.Exit()
 	})
 

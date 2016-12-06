@@ -8,22 +8,22 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/miketheprogrammer/go-thrust/lib/spawn"
+	thrustspawn "github.com/miketheprogrammer/go-thrust/lib/spawn"
 )
 
 type ThrustProvisioner struct{}
 
 func executableNotExist() bool {
-	_, err := os.Stat(spawn.GetExecutablePath())
+	_, err := os.Stat(thrustspawn.GetExecutablePath())
 	return os.IsNotExist(err)
 }
 
 func (prov ThrustProvisioner) Provision() error {
 	basedir := filepath.Join(os.TempDir(), "guivbrdc")
 	os.Mkdir(basedir, os.ModeDir)
-	spawn.SetBaseDirectory(basedir)
+	thrustspawn.SetBaseDirectory(basedir)
 	if executableNotExist() {
-		return prov.extractToPath(spawn.GetThrustDirectory())
+		return prov.extractToPath(thrustspawn.GetThrustDirectory())
 	}
 	return nil
 }
