@@ -1,19 +1,9 @@
-/*
-Use this you must hack your go:
-
-1. Add the code to the file $GOROOT/src/runtime/extern.go:
-	func GoID() int64 {
-	    return getg().goid
-	}
-
-2. Add those to the file $GOROOT/api/go1.txt
-	pkg runtime, func GoID() int64
-*/
 package rmutex
 
 import (
-	"runtime"
 	"sync"
+
+	"github.com/v2pro/plz/gls"
 )
 
 type Mutex struct {
@@ -31,7 +21,7 @@ func NewMutex(locker sync.Locker) Mutex {
 }
 
 func (m *Mutex) Lock() {
-	id := runtime.GoID()
+	id := gls.GoID()
 	if m.cnt != 0 && m.owner == id {
 		m.cnt++
 	} else {
@@ -42,7 +32,7 @@ func (m *Mutex) Lock() {
 }
 
 func (m *Mutex) Unlock() {
-	id := runtime.GoID()
+	id := gls.GoID()
 	if m.cnt == 0 || m.owner != id {
 		panic("You are try to unlock a rmutex not owned")
 	}
