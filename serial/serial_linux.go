@@ -4,6 +4,7 @@ package serial
 
 import (
 	"os"
+	"io"
 	"syscall"
 	"time"
 	"unsafe"
